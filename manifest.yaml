@@ -1,0 +1,4 @@
+name: solfront
+description: Solana frontend metrics collector
+version: "0.2"
+author: solfront
